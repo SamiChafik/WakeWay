@@ -2,9 +2,16 @@ package com.example.wakeway
 
 import android.Manifest
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.preference.PreferenceManager
@@ -22,12 +29,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.NightsStay
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -53,17 +60,23 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.MapEventsOverlay
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polygon
+import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
+import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var geofencingClient: GeofencingClient
+    private var myLocationOverlay: MyLocationNewOverlay? = null
 
     private val requestPermissionsLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
             val fineGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true
             if (!fineGranted) {
                 Toast.makeText(this, "Location permission is required for WakeWay", Toast.LENGTH_LONG).show()
+            } else {
+                // Enable my-location overlay once permission is granted
+                myLocationOverlay?.enableMyLocation()
             }
         }
 
@@ -81,12 +94,16 @@ class MainActivity : ComponentActivity() {
         setContent {
             WakeWayTheme {
                 WakeWayScreen(
+                    activity = this,
                     onStartTrip = { geoPoint, radiusMeters ->
                         registerGeofence(geoPoint, radiusMeters)
                         startForegroundService(geoPoint, radiusMeters)
                     },
                     onStopTrip = {
                         stopTrip()
+                    },
+                    onMyLocationOverlayCreated = { overlay ->
+                        myLocationOverlay = overlay
                     }
                 )
             }
@@ -173,6 +190,12 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         Configuration.getInstance().load(this, PreferenceManager.getDefaultSharedPreferences(this))
+        myLocationOverlay?.enableMyLocation()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        myLocationOverlay?.disableMyLocation()
     }
 }
 
@@ -180,10 +203,13 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun WakeWayScreen(
+    activity: MainActivity,
     onStartTrip: (GeoPoint, Float) -> Unit,
     onStopTrip: () -> Unit,
+    onMyLocationOverlayCreated: (MyLocationNewOverlay) -> Unit,
 ) {
     val context = LocalContext.current
+    val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
     var destinationPoint by remember { mutableStateOf<GeoPoint?>(null) }
     var radiusKm by remember { mutableFloatStateOf(5f) }
@@ -191,6 +217,33 @@ fun WakeWayScreen(
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var destinationMarker by remember { mutableStateOf<Marker?>(null) }
     var radiusCircle by remember { mutableStateOf<Polygon?>(null) }
+
+    // Volume slider state
+    val maxVolume = remember { audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM) }
+    var alarmVolume by remember {
+        mutableFloatStateOf(audioManager.getStreamVolume(AudioManager.STREAM_ALARM).toFloat())
+    }
+
+    // Listen for trip ended broadcast (alarm triggered)
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action == LocationForegroundService.ACTION_TRIP_ENDED) {
+                    isTripActive = false
+                }
+            }
+        }
+        val filter = IntentFilter(LocationForegroundService.ACTION_TRIP_ENDED)
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        onDispose {
+            context.unregisterReceiver(receiver)
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // ── Full-screen osmdroid Map ──
@@ -203,12 +256,21 @@ fun WakeWayScreen(
                     controller.setZoom(6.0)
                     controller.setCenter(GeoPoint(36.75, 3.06)) // Default to Algiers
 
+                    // ── My Location overlay with purple icons ──
+                    val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(ctx), this)
+                    locationOverlay.setPersonIcon(createPurplePersonBitmap())
+                    locationOverlay.setDirectionIcon(createPurpleArrowBitmap())
+                    locationOverlay.enableMyLocation()
+                    locationOverlay.enableFollowLocation()
+                    overlays.add(locationOverlay)
+                    onMyLocationOverlayCreated(locationOverlay)
+
                     // Long-press to drop pin
                     val eventsOverlay = MapEventsOverlay(object : MapEventsReceiver {
-                        override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean = false
+                        override fun singleTapConfirmedHelper(p: GeoPoint): Boolean = false
 
-                        override fun longPressHelper(p: GeoPoint?): Boolean {
-                            if (p != null && !isTripActive) {
+                        override fun longPressHelper(p: GeoPoint): Boolean {
+                            if (!isTripActive) {
                                 destinationPoint = p
 
                                 // Remove old marker and circle
@@ -295,6 +357,32 @@ fun WakeWayScreen(
             }
         }
 
+        // ── "My Location" FAB ──
+        FloatingActionButton(
+            onClick = {
+                mapView?.let { map ->
+                    val loc = (map.overlays.firstOrNull { it is MyLocationNewOverlay } as? MyLocationNewOverlay)
+                    loc?.myLocation?.let { pos ->
+                        map.controller.animateTo(pos)
+                        map.controller.setZoom(15.0)
+                    }
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 100.dp, end = 16.dp)
+                .size(48.dp),
+            containerColor = NightCard,
+            contentColor = NightAccentBright,
+            shape = CircleShape,
+        ) {
+            Icon(
+                imageVector = Icons.Default.MyLocation,
+                contentDescription = "My Location",
+                modifier = Modifier.size(22.dp),
+            )
+        }
+
         // ── Bottom Control Panel ──
         Column(
             modifier = Modifier
@@ -376,7 +464,54 @@ fun WakeWayScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // ── Alarm Volume slider ──
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.VolumeUp,
+                    contentDescription = null,
+                    tint = NightAccentBright,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Alarm Volume",
+                    color = NightTextPrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                )
+            }
+            Slider(
+                value = alarmVolume,
+                onValueChange = { newVal ->
+                    alarmVolume = newVal
+                    audioManager.setStreamVolume(
+                        AudioManager.STREAM_ALARM,
+                        newVal.roundToInt(),
+                        0
+                    )
+                    // Persist for WakeUpActivity to read
+                    context.getSharedPreferences("wakeway_prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putInt("alarm_volume", newVal.roundToInt())
+                        .putInt("alarm_volume_max", maxVolume)
+                        .apply()
+                },
+                valueRange = 0f..maxVolume.toFloat(),
+                steps = maxVolume - 1,
+                colors = SliderDefaults.colors(
+                    thumbColor = NightPurple,
+                    activeTrackColor = NightPurple.copy(alpha = 0.7f),
+                    inactiveTrackColor = NightSliderTrack,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Start / Stop Trip button
             val buttonColor by animateColorAsState(
@@ -450,4 +585,73 @@ fun WakeWayScreen(
             Spacer(modifier = Modifier.height(16.dp))
         }
     }
+}
+
+// ─── Purple Location Icons ────────────────────────────────────────────────────
+
+/**
+ * Creates a purple circle bitmap used as the "person" icon on the map.
+ */
+private fun createPurplePersonBitmap(): Bitmap {
+    val size = 48
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+
+    // Outer glow ring
+    val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0x407C4DFF // semi-transparent purple
+        style = Paint.Style.FILL
+    }
+    canvas.drawCircle(size / 2f, size / 2f, size / 2f, glowPaint)
+
+    // Inner solid circle
+    val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF7C4DFF.toInt() // NightPurple
+        style = Paint.Style.FILL
+    }
+    canvas.drawCircle(size / 2f, size / 2f, size / 3f, fillPaint)
+
+    // White center dot
+    val centerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFFFFFFF.toInt()
+        style = Paint.Style.FILL
+    }
+    canvas.drawCircle(size / 2f, size / 2f, size / 8f, centerPaint)
+
+    return bitmap
+}
+
+/**
+ * Creates a purple directional arrow bitmap for when the user is moving.
+ */
+private fun createPurpleArrowBitmap(): Bitmap {
+    val width = 48
+    val height = 64
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+
+    val arrowPath = Path().apply {
+        moveTo(width / 2f, 4f)           // Top point
+        lineTo(width - 6f, height - 8f)  // Bottom right
+        lineTo(width / 2f, height - 20f) // Inner notch
+        lineTo(6f, height - 8f)          // Bottom left
+        close()
+    }
+
+    // Arrow fill
+    val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF7C4DFF.toInt() // NightPurple
+        style = Paint.Style.FILL
+    }
+    canvas.drawPath(arrowPath, fillPaint)
+
+    // Arrow outline
+    val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFFFFFFF.toInt()
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+    }
+    canvas.drawPath(arrowPath, strokePaint)
+
+    return bitmap
 }
