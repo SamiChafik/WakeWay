@@ -1,0 +1,36 @@
+# Built artifacts
+bin/
+gen/
+out/
+build/
+.gradle/
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+/captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Gradle
+.gradle/
+
+# Build folders for all modules
+*/build/
+
+# Signing files
+*.jks
+*.keystore
+
+# Log files
+*.log
+
+# Sensitive info
+google-services.json
