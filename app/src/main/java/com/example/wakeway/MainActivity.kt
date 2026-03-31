@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -129,6 +131,19 @@ class MainActivity : ComponentActivity() {
                 requestPermissionsLauncher.launch(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION))
             }
         }
+    }
+
+    fun checkOverlayPermission(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Please allow 'Display over other apps' to enable full-screen popup!", Toast.LENGTH_LONG).show()
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+            startActivity(intent)
+            return false
+        }
+        return true
     }
 
     private fun registerGeofence(geoPoint: GeoPoint, radiusMeters: Float) {
@@ -526,6 +541,10 @@ fun WakeWayScreen(
                         val dest = destinationPoint
                         if (dest == null) {
                             Toast.makeText(context, "Drop a pin first!", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        // Force overlay permission for full-screen alarm behavior
+                        if (!activity.checkOverlayPermission()) {
                             return@Button
                         }
                         isTripActive = true
