@@ -34,7 +34,7 @@ class LocationForegroundService : Service() {
     companion object {
         const val TAG = "WakeWayService"
         const val CHANNEL_ID = "wakeway_trip_channel"
-        const val ALARM_CHANNEL_ID = "wakeway_alarm_channel"
+        const val ALARM_CHANNEL_ID = "wakeway_alarm_channel_v3"
         const val NOTIFICATION_ID = 1001
         const val ALARM_NOTIFICATION_ID = 1002
         const val ACTION_TRIGGER_ALARM = "com.example.wakeway.ACTION_TRIGGER_ALARM"
@@ -249,7 +249,6 @@ class LocationForegroundService : Service() {
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setFullScreenIntent(fullScreenPendingIntent, true)
             .setOngoing(true)
-            .setSilent(true) // Silent — service plays its own sound
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(android.R.drawable.ic_delete, "Dismiss", dismissPendingIntent)
             .build()
@@ -298,7 +297,7 @@ class LocationForegroundService : Service() {
                 setShowBadge(false)
             }
 
-            // Silent high-priority channel — service handles audio
+            // High-priority channel (must allow default alert behaviors to prevent OS from downgrading it)
             val alarmChannel = NotificationChannel(
                 ALARM_CHANNEL_ID,
                 "WakeWay Alarm",
@@ -307,8 +306,6 @@ class LocationForegroundService : Service() {
                 description = "Full-screen alarm when you reach your destination"
                 setBypassDnd(true)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                setSound(null, null)
-                enableVibration(false)
             }
 
             val manager = getSystemService(NotificationManager::class.java)
