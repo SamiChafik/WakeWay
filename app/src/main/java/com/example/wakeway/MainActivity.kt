@@ -224,6 +224,69 @@ class MainActivity : ComponentActivity() {
 
 // ─── Compose UI ───────────────────────────────────────────────────────────────
 
+fun parseCoordinates(query: String): GeoPoint? {
+    val cleanQuery = query.trim().removePrefix("(").removeSuffix(")").trim()
+    
+    // Try simple decimal split by comma
+    val decimalParts = cleanQuery.split(",")
+    if (decimalParts.size == 2) {
+        val lat = decimalParts[0].trim().toDoubleOrNull()
+        val lon = decimalParts[1].trim().toDoubleOrNull()
+        if (lat != null && lon != null) {
+            return GeoPoint(lat, lon)
+        }
+    }
+    
+    // Try simple decimal split by space (e.g. "32.332 -6.362")
+    val spaceParts = cleanQuery.split("\\s+".toRegex())
+    if (spaceParts.size == 2) {
+        val lat = spaceParts[0].trim().toDoubleOrNull()
+        val lon = spaceParts[1].trim().toDoubleOrNull()
+        if (lat != null && lon != null) {
+            return GeoPoint(lat, lon)
+        }
+    }
+
+    // Try DMS parsing
+    // Pattern example: 32°19'57.0"N 6°21'45.8"W
+    val dmsRegex = Regex("""(\d+)[°\s]+(\d+)['\s]+([0-9.]+)["\s]*([NS])[\s,]+(\d+)[°\s]+(\d+)['\s]+([0-9.]+)["\s]*([EW])""", RegexOption.IGNORE_CASE)
+    val match = dmsRegex.find(cleanQuery)
+    if (match != null) {
+        val latDeg = match.groupValues[1].toDoubleOrNull() ?: 0.0
+        val latMin = match.groupValues[2].toDoubleOrNull() ?: 0.0
+        val latSec = match.groupValues[3].toDoubleOrNull() ?: 0.0
+        val latDir = match.groupValues[4].uppercase()
+        
+        var lat = latDeg + (latMin / 60.0) + (latSec / 3600.0)
+        if (latDir == "S") lat = -lat
+        
+        val lonDeg = match.groupValues[5].toDoubleOrNull() ?: 0.0
+        val lonMin = match.groupValues[6].toDoubleOrNull() ?: 0.0
+        val lonSec = match.groupValues[7].toDoubleOrNull() ?: 0.0
+        val lonDir = match.groupValues[8].uppercase()
+        
+        var lon = lonDeg + (lonMin / 60.0) + (lonSec / 3600.0)
+        if (lonDir == "W") lon = -lon
+        
+        return GeoPoint(lat, lon)
+    }
+    
+    // Try simpler DMS where seconds might be omitted, or space separated
+    val dmsSimpleRegex = Regex("""([0-9.]+)[°\s]*([NS])[\s,]+([0-9.]+)[°\s]*([EW])""", RegexOption.IGNORE_CASE)
+    val match2 = dmsSimpleRegex.find(cleanQuery)
+    if (match2 != null) {
+        var lat = match2.groupValues[1].toDoubleOrNull() ?: 0.0
+        if (match2.groupValues[2].uppercase() == "S") lat = -lat
+        
+        var lon = match2.groupValues[3].toDoubleOrNull() ?: 0.0
+        if (match2.groupValues[4].uppercase() == "W") lon = -lon
+        
+        return GeoPoint(lat, lon)
+    }
+
+    return null
+}
+
 @Composable
 fun WakeWayScreen(
     activity: MainActivity,
@@ -254,8 +317,8 @@ fun WakeWayScreen(
             isSuggestionsExpanded = false
             return@LaunchedEffect
         }
-        val coords = searchQuery.split(",").map { it.trim().toDoubleOrNull() }
-        if (coords.size == 2 && coords[0] != null && coords[1] != null) return@LaunchedEffect
+        
+        if (parseCoordinates(searchQuery) != null) return@LaunchedEffect
         
         kotlinx.coroutines.delay(600)
         try {
@@ -291,6 +354,32 @@ fun WakeWayScreen(
     var isSoundEnabled by remember { mutableStateOf(prefs.getBoolean("enable_sound", true)) }
     var isVibrationEnabled by remember { mutableStateOf(prefs.getBoolean("enable_vibration", true)) }
 
+    val updateMapPin: (GeoPoint) -> Unit = { pt ->
+        destinationPoint = pt
+        mapView?.let { map ->
+            if (destinationMarker == null) {
+                destinationMarker = Marker(map).apply {
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                    icon = ContextCompat.getDrawable(context, R.drawable.ic_destination_pin)
+                }
+                map.overlays.add(destinationMarker)
+            }
+            destinationMarker?.position = pt
+            destinationMarker?.title = "Destination"
+            
+            if (radiusCircle == null) {
+                radiusCircle = Polygon(map)
+                map.overlays.add(radiusCircle)
+            }
+            radiusCircle?.points = Polygon.pointsAsCircle(pt, radiusKm.toDouble() * 1000)
+            radiusCircle?.fillColor = 0x227C4DFF
+            radiusCircle?.strokeColor = 0xFF7C4DFF.toInt()
+            radiusCircle?.strokeWidth = 2f
+            
+            map.invalidate()
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         // ── Map View ──
         AndroidView(
@@ -317,31 +406,7 @@ fun WakeWayScreen(
                         }
                         override fun longPressHelper(p: GeoPoint?): Boolean {
                             if (isTripActive) return false
-                            p?.let {
-                                destinationPoint = it
-                                // Update Marker
-                                if (destinationMarker == null) {
-                                    destinationMarker = Marker(this@apply).apply {
-                                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                                        icon = ContextCompat.getDrawable(ctx, R.drawable.ic_destination_pin)
-                                    }
-                                    overlays.add(destinationMarker)
-                                }
-                                destinationMarker?.position = it
-                                destinationMarker?.title = "Destination"
-                                
-                                // Update Radius Circle
-                                if (radiusCircle == null) {
-                                    radiusCircle = Polygon(this@apply)
-                                    overlays.add(radiusCircle)
-                                }
-                                radiusCircle?.points = Polygon.pointsAsCircle(it, radiusKm.toDouble() * 1000)
-                                radiusCircle?.fillColor = 0x227C4DFF // Translucent purple
-                                radiusCircle?.strokeColor = 0xFF7C4DFF.toInt()
-                                radiusCircle?.strokeWidth = 2f
-                                
-                                invalidate()
-                            }
+                            p?.let { updateMapPin(it) }
                             return true
                         }
                     })
@@ -387,15 +452,13 @@ fun WakeWayScreen(
                             isSuggestionsExpanded = false
                             
                             // Try parsing coordinates
-                            val coords = searchQuery.split(",").map { it.trim().toDoubleOrNull() }
-                            if (coords.size == 2 && coords[0] != null && coords[1] != null) {
-                                val lat = coords[0]!!
-                                val lon = coords[1]!!
+                            val parsedCoords = parseCoordinates(searchQuery)
+                            if (parsedCoords != null) {
                                 isSearching = false
-                                val pt = GeoPoint(lat, lon)
                                 mapView?.overlays?.filterIsInstance<MyLocationNewOverlay>()?.forEach { it.disableFollowLocation() }
-                                mapView?.controller?.animateTo(pt)
+                                mapView?.controller?.animateTo(parsedCoords)
                                 mapView?.controller?.setZoom(15.0)
+                                updateMapPin(parsedCoords)
                                 Toast.makeText(context, "Location set to Coordinates", Toast.LENGTH_SHORT).show()
                             } else {
                                 coroutineScope.launch(Dispatchers.IO) {
@@ -420,6 +483,7 @@ fun WakeWayScreen(
                                                     mapView?.overlays?.filterIsInstance<MyLocationNewOverlay>()?.forEach { it.disableFollowLocation() }
                                                     mapView?.controller?.animateTo(pt)
                                                     mapView?.controller?.setZoom(12.0)
+                                                    updateMapPin(pt)
                                                     Toast.makeText(context, "Found: $displayName", Toast.LENGTH_SHORT).show()
                                                 }
                                             } else {
@@ -473,6 +537,7 @@ fun WakeWayScreen(
                                     mapView?.overlays?.filterIsInstance<MyLocationNewOverlay>()?.forEach { it.disableFollowLocation() }
                                     mapView?.controller?.animateTo(suggestion.second)
                                     mapView?.controller?.setZoom(14.0)
+                                    updateMapPin(suggestion.second)
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
