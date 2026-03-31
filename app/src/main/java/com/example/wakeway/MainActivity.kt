@@ -310,6 +310,26 @@ fun WakeWayScreen(
     var isSuggestionsExpanded by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
+    // Listen for trip ended broadcast
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action == LocationForegroundService.ACTION_TRIP_ENDED) {
+                    isTripActive = false
+                }
+            }
+        }
+        val filter = IntentFilter(LocationForegroundService.ACTION_TRIP_ENDED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(receiver, filter)
+        }
+        onDispose {
+            context.unregisterReceiver(receiver)
+        }
+    }
+
     // Auto-complete Debounced Search
     LaunchedEffect(searchQuery) {
         if (searchQuery.length < 3) {
@@ -785,7 +805,7 @@ fun WakeWayScreen(
                 colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
             ) {
                 Text(
-                    text = if (isTripActive) "⏹  Stop Trip" else "▶  Start Trip",
+                    text = if (isTripActive) "Stop Trip" else "Start Trip",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                     color = NightBlack,
