@@ -13,7 +13,11 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.location.Geocoder
 import android.media.AudioManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import android.os.Build
 import android.os.Bundle
 import android.preference.PreferenceManager
@@ -27,10 +31,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.NightsStay
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,6 +48,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -233,6 +241,9 @@ fun WakeWayScreen(
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var destinationMarker by remember { mutableStateOf<Marker?>(null) }
     var radiusCircle by remember { mutableStateOf<Polygon?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var isSearching by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     // Volume slider state
     val maxVolume = remember { audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM) }
@@ -279,6 +290,8 @@ fun WakeWayScreen(
                     val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(ctx), this)
                     locationOverlay.setPersonIcon(createPurplePersonBitmap())
                     locationOverlay.setDirectionIcon(createPurpleArrowBitmap())
+                    locationOverlay.setPersonAnchor(0.5f, 0.5f)
+                    locationOverlay.setDirectionAnchor(0.5f, 0.5f)
                     locationOverlay.enableMyLocation()
                     locationOverlay.enableFollowLocation()
                     overlays.add(locationOverlay)
@@ -343,18 +356,18 @@ fun WakeWayScreen(
             }
         )
 
-        // ── Top Bar with App Name ──
-        Box(
+        // ── Top Bar with App Name & Search ──
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(NightBlack.copy(alpha = 0.9f), Color.Transparent)
+                        colors = listOf(NightBlack.copy(alpha = 0.95f), NightBlack.copy(alpha = 0.6f), Color.Transparent)
                     )
                 )
-                .padding(top = 48.dp, bottom = 24.dp)
+                .padding(top = 48.dp, bottom = 24.dp, start = 16.dp, end = 16.dp)
                 .align(Alignment.TopCenter),
-            contentAlignment = Alignment.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -374,31 +387,80 @@ fun WakeWayScreen(
                     color = NightTextPrimary,
                 )
             }
-        }
 
-        // ── "My Location" FAB ──
-        FloatingActionButton(
-            onClick = {
-                mapView?.let { map ->
-                    val loc = (map.overlays.firstOrNull { it is MyLocationNewOverlay } as? MyLocationNewOverlay)
-                    loc?.myLocation?.let { pos ->
-                        map.controller.animateTo(pos)
-                        map.controller.setZoom(15.0)
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Search city or location...", color = NightTextSecondary) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = NightAccentBright) },
+                trailingIcon = {
+                    if (isSearching) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = NightAccentBright, strokeWidth = 2.dp)
                     }
-                }
-            },
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 100.dp, end = 16.dp)
-                .size(48.dp),
-            containerColor = NightCard,
-            contentColor = NightAccentBright,
-            shape = CircleShape,
-        ) {
-            Icon(
-                imageVector = Icons.Default.MyLocation,
-                contentDescription = "My Location",
-                modifier = Modifier.size(22.dp),
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
+                        if (searchQuery.isNotBlank()) {
+                            isSearching = true
+                            coroutineScope.launch(Dispatchers.IO) {
+                                try {
+                                    val url = java.net.URL("https://nominatim.openstreetmap.org/search?q=${java.net.URLEncoder.encode(searchQuery, "UTF-8")}&format=json&limit=1")
+                                    val connection = url.openConnection() as java.net.HttpURLConnection
+                                    connection.setRequestProperty("User-Agent", "WakeWay App")
+                                    connection.connect()
+                                    
+                                    if (connection.responseCode == 200) {
+                                        val response = connection.inputStream.bufferedReader().use { it.readText() }
+                                        val jsonArray = org.json.JSONArray(response)
+                                        if (jsonArray.length() > 0) {
+                                            val jsonObject = jsonArray.getJSONObject(0)
+                                            val lat = jsonObject.getDouble("lat")
+                                            val lon = jsonObject.getDouble("lon")
+                                            val displayName = jsonObject.getString("display_name").split(",").firstOrNull() ?: searchQuery
+                                            
+                                            withContext(Dispatchers.Main) {
+                                                isSearching = false
+                                                val pt = GeoPoint(lat, lon)
+                                                mapView?.controller?.animateTo(pt)
+                                                mapView?.controller?.setZoom(12.0)
+                                                Toast.makeText(context, "Found: $displayName", Toast.LENGTH_SHORT).show()
+                                            }
+                                        } else {
+                                            withContext(Dispatchers.Main) {
+                                                isSearching = false
+                                                Toast.makeText(context, "Location not found", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    } else {
+                                        withContext(Dispatchers.Main) {
+                                            isSearching = false
+                                            Toast.makeText(context, "Search limit reached or failed", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                } catch (e: Throwable) {
+                                    withContext(Dispatchers.Main) {
+                                        isSearching = false
+                                        Toast.makeText(context, "Search Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ),
+                shape = RoundedCornerShape(24.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = NightPurple,
+                    unfocusedBorderColor = NightSliderTrack,
+                    focusedContainerColor = NightCard,
+                    unfocusedContainerColor = NightCard,
+                    focusedTextColor = NightTextPrimary,
+                    unfocusedTextColor = NightTextPrimary
+                )
             )
         }
 
@@ -540,8 +602,30 @@ fun WakeWayScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 12.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                // My Location Button
+                IconButton(
+                    onClick = {
+                        mapView?.let { map ->
+                            val loc = (map.overlays.firstOrNull { it is MyLocationNewOverlay } as? MyLocationNewOverlay)
+                            loc?.myLocation?.let { pos ->
+                                map.controller.animateTo(pos)
+                                map.controller.setZoom(15.0)
+                            }
+                        }
+                    },
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MyLocation,
+                        contentDescription = "My Location",
+                        tint = NightAccentBright,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(
                         checked = isSoundEnabled,
