@@ -140,14 +140,20 @@ class LocationForegroundService : Service() {
         // Notify MainActivity to change the button back to "Start Trip"
         sendBroadcast(Intent(ACTION_TRIP_ENDED))
 
-        // 1. Set the user's chosen alarm volume
-        setUserAlarmVolume()
+        val prefs = getSharedPreferences("wakeway_prefs", Context.MODE_PRIVATE)
+        val isSoundEnabled = prefs.getBoolean("enable_sound", true)
+        val isVibrationEnabled = prefs.getBoolean("enable_vibration", true)
 
-        // 2. Play alarm sound IN the service
-        startAlarmSound()
+        // 1. Play alarm sound IN the service (if enabled)
+        if (isSoundEnabled) {
+            setUserAlarmVolume()
+            startAlarmSound()
+        }
 
-        // 3. Start vibration IN the service
-        startVibration()
+        // 2. Start vibration IN the service (if enabled)
+        if (isVibrationEnabled) {
+            startVibration()
+        }
 
         // 4. Show full-screen notification — this will launch WakeUpActivity
         //    when the screen is OFF (fullScreenIntent) or let the user tap it when ON.

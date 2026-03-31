@@ -225,6 +225,7 @@ fun WakeWayScreen(
 ) {
     val context = LocalContext.current
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    val prefs = remember { context.getSharedPreferences("wakeway_prefs", Context.MODE_PRIVATE) }
 
     var destinationPoint by remember { mutableStateOf<GeoPoint?>(null) }
     var radiusKm by remember { mutableFloatStateOf(5f) }
@@ -238,6 +239,9 @@ fun WakeWayScreen(
     var alarmVolume by remember {
         mutableFloatStateOf(audioManager.getStreamVolume(AudioManager.STREAM_ALARM).toFloat())
     }
+    
+    var isSoundEnabled by remember { mutableStateOf(prefs.getBoolean("enable_sound", true)) }
+    var isVibrationEnabled by remember { mutableStateOf(prefs.getBoolean("enable_vibration", true)) }
 
     // Listen for trip ended broadcast (alarm triggered)
     DisposableEffect(context) {
@@ -518,13 +522,57 @@ fun WakeWayScreen(
                 },
                 valueRange = 0f..maxVolume.toFloat(),
                 steps = maxVolume - 1,
+                enabled = isSoundEnabled,
                 colors = SliderDefaults.colors(
                     thumbColor = NightPurple,
                     activeTrackColor = NightPurple.copy(alpha = 0.7f),
                     inactiveTrackColor = NightSliderTrack,
+                    disabledThumbColor = NightSliderTrack,
+                    disabledActiveTrackColor = NightSliderTrack.copy(alpha = 0.5f),
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ── Sound & Vibration Toggles ──
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = isSoundEnabled,
+                        onCheckedChange = { 
+                            isSoundEnabled = it
+                            prefs.edit().putBoolean("enable_sound", it).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = NightPurple,
+                            checkedTrackColor = NightPurple.copy(alpha = 0.5f)
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Sound", color = NightTextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = isVibrationEnabled,
+                        onCheckedChange = { 
+                            isVibrationEnabled = it
+                            prefs.edit().putBoolean("enable_vibration", it).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = NightPurple,
+                            checkedTrackColor = NightPurple.copy(alpha = 0.5f)
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Vibration", color = NightTextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
 
