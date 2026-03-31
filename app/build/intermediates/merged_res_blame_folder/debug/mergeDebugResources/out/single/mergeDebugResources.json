@@ -1,22 +1,26 @@
 [
     {
-        "merged": "com.example.wakeway.app-debug-50:/mipmap-xxxhdpi_ic_launcher.png.flat",
-        "source": "com.example.wakeway.app-main-52:/mipmap-xxxhdpi/ic_launcher.png"
+        "merged": "com.example.wakeway.app-debug-50:/drawable_ic_destination_pin.xml.flat",
+        "source": "com.example.wakeway.app-main-52:/drawable/ic_destination_pin.xml"
     },
     {
-        "merged": "com.example.wakeway.app-debug-50:/mipmap-hdpi_ic_launcher.png.flat",
-        "source": "com.example.wakeway.app-main-52:/mipmap-hdpi/ic_launcher.png"
+        "merged": "C:\\Users\\Sami\\.gradle\\daemon\\9.0.0\\com.example.wakeway.app-debug-50:\\mipmap-xxxhdpi_ic_launcher.png.flat",
+        "source": "C:\\Users\\Sami\\.gradle\\daemon\\9.0.0\\com.example.wakeway.app-main-52:\\mipmap-xxxhdpi\\ic_launcher.png"
     },
     {
-        "merged": "com.example.wakeway.app-debug-50:/mipmap-xxhdpi_ic_launcher.png.flat",
-        "source": "com.example.wakeway.app-main-52:/mipmap-xxhdpi/ic_launcher.png"
+        "merged": "C:\\Users\\Sami\\.gradle\\daemon\\9.0.0\\com.example.wakeway.app-debug-50:\\mipmap-xxhdpi_ic_launcher.png.flat",
+        "source": "C:\\Users\\Sami\\.gradle\\daemon\\9.0.0\\com.example.wakeway.app-main-52:\\mipmap-xxhdpi\\ic_launcher.png"
     },
     {
-        "merged": "com.example.wakeway.app-debug-50:/mipmap-mdpi_ic_launcher.png.flat",
-        "source": "com.example.wakeway.app-main-52:/mipmap-mdpi/ic_launcher.png"
+        "merged": "C:\\Users\\Sami\\.gradle\\daemon\\9.0.0\\com.example.wakeway.app-debug-50:\\mipmap-xhdpi_ic_launcher.png.flat",
+        "source": "C:\\Users\\Sami\\.gradle\\daemon\\9.0.0\\com.example.wakeway.app-main-52:\\mipmap-xhdpi\\ic_launcher.png"
     },
     {
-        "merged": "com.example.wakeway.app-debug-50:/mipmap-xhdpi_ic_launcher.png.flat",
-        "source": "com.example.wakeway.app-main-52:/mipmap-xhdpi/ic_launcher.png"
+        "merged": "C:\\Users\\Sami\\.gradle\\daemon\\9.0.0\\com.example.wakeway.app-debug-50:\\mipmap-mdpi_ic_launcher.png.flat",
+        "source": "C:\\Users\\Sami\\.gradle\\daemon\\9.0.0\\com.example.wakeway.app-main-52:\\mipmap-mdpi\\ic_launcher.png"
+    },
+    {
+        "merged": "C:\\Users\\Sami\\.gradle\\daemon\\9.0.0\\com.example.wakeway.app-debug-50:\\mipmap-hdpi_ic_launcher.png.flat",
+        "source": "C:\\Users\\Sami\\.gradle\\daemon\\9.0.0\\com.example.wakeway.app-main-52:\\mipmap-hdpi\\ic_launcher.png"
     }
 ]

@@ -243,91 +243,103 @@ fun WakeWayScreen(
     var radiusCircle by remember { mutableStateOf<Polygon?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var isSearching by remember { mutableStateOf(false) }
+    var searchSuggestions by remember { mutableStateOf<List<Pair<String, GeoPoint>>>(emptyList()) }
+    var isSuggestionsExpanded by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
-    // Volume slider state
-    val maxVolume = remember { audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM) }
-    var alarmVolume by remember {
-        mutableFloatStateOf(audioManager.getStreamVolume(AudioManager.STREAM_ALARM).toFloat())
+    // Auto-complete Debounced Search
+    LaunchedEffect(searchQuery) {
+        if (searchQuery.length < 3) {
+            searchSuggestions = emptyList()
+            isSuggestionsExpanded = false
+            return@LaunchedEffect
+        }
+        val coords = searchQuery.split(",").map { it.trim().toDoubleOrNull() }
+        if (coords.size == 2 && coords[0] != null && coords[1] != null) return@LaunchedEffect
+        
+        kotlinx.coroutines.delay(600)
+        try {
+            withContext(Dispatchers.IO) {
+                val url = java.net.URL("https://nominatim.openstreetmap.org/search?q=${java.net.URLEncoder.encode(searchQuery, "UTF-8")}&format=json&limit=4")
+                val connection = url.openConnection() as java.net.HttpURLConnection
+                connection.setRequestProperty("User-Agent", "WakeWay App")
+                connection.connect()
+                if (connection.responseCode == 200) {
+                    val response = connection.inputStream.bufferedReader().use { it.readText() }
+                    val jsonArray = org.json.JSONArray(response)
+                    val results = mutableListOf<Pair<String, GeoPoint>>()
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val lat = obj.getDouble("lat")
+                        val lon = obj.getDouble("lon")
+                        val name = obj.getString("display_name").split(",").take(2).joinToString(", ")
+                        results.add(Pair(name, GeoPoint(lat, lon)))
+                    }
+                    withContext(Dispatchers.Main) {
+                        searchSuggestions = results
+                        isSuggestionsExpanded = results.isNotEmpty()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Dry
+        }
     }
-    
+
+    val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+    var alarmVolume by remember { mutableFloatStateOf(prefs.getInt("alarm_volume", maxVolume / 2).toFloat()) }
     var isSoundEnabled by remember { mutableStateOf(prefs.getBoolean("enable_sound", true)) }
     var isVibrationEnabled by remember { mutableStateOf(prefs.getBoolean("enable_vibration", true)) }
 
-    // Listen for trip ended broadcast (alarm triggered)
-    DisposableEffect(context) {
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(ctx: Context?, intent: Intent?) {
-                if (intent?.action == LocationForegroundService.ACTION_TRIP_ENDED) {
-                    isTripActive = false
-                }
-            }
-        }
-        val filter = IntentFilter(LocationForegroundService.ACTION_TRIP_ENDED)
-        ContextCompat.registerReceiver(
-            context,
-            receiver,
-            filter,
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
-        onDispose {
-            context.unregisterReceiver(receiver)
-        }
-    }
-
     Box(modifier = Modifier.fillMaxSize()) {
-        // ── Full-screen osmdroid Map ──
+        // ── Map View ──
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 MapView(ctx).apply {
                     setTileSource(TileSourceFactory.MAPNIK)
                     setMultiTouchControls(true)
-                    controller.setZoom(6.0)
-                    controller.setCenter(GeoPoint(36.75, 3.06)) // Default to Algiers
+                    controller.setZoom(5.0)
+                    controller.setCenter(GeoPoint(0.0, 0.0))
 
-                    // ── My Location overlay with purple icons ──
+                    // Location Overlay
                     val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(ctx), this)
-                    locationOverlay.setPersonIcon(createPurplePersonBitmap())
-                    locationOverlay.setDirectionIcon(createPurpleArrowBitmap())
-                    locationOverlay.setPersonAnchor(0.5f, 0.5f)
-                    locationOverlay.setDirectionAnchor(0.5f, 0.5f)
                     locationOverlay.enableMyLocation()
-                    locationOverlay.enableFollowLocation()
+                    locationOverlay.setPersonIcon(createPurplePersonBitmap())
+                    locationOverlay.setDirectionArrow(createPurpleArrowBitmap(), createPurpleArrowBitmap())
                     overlays.add(locationOverlay)
                     onMyLocationOverlayCreated(locationOverlay)
 
-                    // Long-press to drop pin
+                    // Long press listener to set destination
                     val eventsOverlay = MapEventsOverlay(object : MapEventsReceiver {
-                        override fun singleTapConfirmedHelper(p: GeoPoint): Boolean = false
-
-                        override fun longPressHelper(p: GeoPoint): Boolean {
-                            if (!isTripActive) {
-                                destinationPoint = p
-
-                                // Remove old marker and circle
-                                destinationMarker?.let { overlays.remove(it) }
-                                radiusCircle?.let { overlays.remove(it) }
-
-                                // New marker
-                                val marker = Marker(this@apply).apply {
-                                    position = p
-                                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                                    title = "Destination"
+                        override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
+                            isSuggestionsExpanded = false
+                            return true
+                        }
+                        override fun longPressHelper(p: GeoPoint?): Boolean {
+                            if (isTripActive) return false
+                            p?.let {
+                                destinationPoint = it
+                                // Update Marker
+                                if (destinationMarker == null) {
+                                    destinationMarker = Marker(this@apply).apply {
+                                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                                        icon = ContextCompat.getDrawable(ctx, R.drawable.ic_destination_pin)
+                                    }
+                                    overlays.add(destinationMarker)
                                 }
-                                overlays.add(marker)
-                                destinationMarker = marker
-
-                                // Radius circle
-                                val circle = Polygon(this@apply).apply {
-                                    points = Polygon.pointsAsCircle(p, radiusKm.toDouble() * 1000)
-                                    fillPaint.color = 0x264E6AFF // semi-transparent accent
-                                    outlinePaint.color = 0xFF4E6AFF.toInt()
-                                    outlinePaint.strokeWidth = 3f
+                                destinationMarker?.position = it
+                                destinationMarker?.title = "Destination"
+                                
+                                // Update Radius Circle
+                                if (radiusCircle == null) {
+                                    radiusCircle = Polygon(this@apply)
+                                    overlays.add(radiusCircle)
                                 }
-                                overlays.add(circle)
-                                radiusCircle = circle
-
+                                radiusCircle?.points = Polygon.pointsAsCircle(it, radiusKm.toDouble() * 1000)
+                                radiusCircle?.fillColor = 0x227C4DFF // Translucent purple
+                                radiusCircle?.strokeColor = 0xFF7C4DFF.toInt()
+                                radiusCircle?.strokeWidth = 2f
+                                
                                 invalidate()
                             }
                             return true
@@ -337,68 +349,33 @@ fun WakeWayScreen(
                     mapView = this
                 }
             },
+            modifier = Modifier.fillMaxSize(),
             update = { view ->
-                // Update radius circle when slider changes
-                destinationPoint?.let { point ->
-                    radiusCircle?.let { circle ->
-                        view.overlays.remove(circle)
+                radiusCircle?.let {
+                    destinationPoint?.let { pt ->
+                        it.points = Polygon.pointsAsCircle(pt, radiusKm.toDouble() * 1000)
+                        view.invalidate()
                     }
-                    val newCircle = Polygon(view).apply {
-                        points = Polygon.pointsAsCircle(point, radiusKm.toDouble() * 1000)
-                        fillPaint.color = 0x264E6AFF
-                        outlinePaint.color = 0xFF4E6AFF.toInt()
-                        outlinePaint.strokeWidth = 3f
-                    }
-                    view.overlays.add(newCircle)
-                    radiusCircle = newCircle
-                    view.invalidate()
                 }
             }
         )
 
-        // ── Top Bar with App Name & Search ──
+        // ── Top Search Bar ──
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(NightBlack.copy(alpha = 0.95f), NightBlack.copy(alpha = 0.6f), Color.Transparent)
-                    )
-                )
-                .padding(top = 48.dp, bottom = 24.dp, start = 16.dp, end = 16.dp)
-                .align(Alignment.TopCenter),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(top = 48.dp, start = 16.dp, end = 16.dp)
+                .align(Alignment.TopCenter)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Default.NightsStay,
-                    contentDescription = null,
-                    tint = NightAccentBright,
-                    modifier = Modifier.size(28.dp),
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "WakeWay",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = NightTextPrimary,
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Search city or location...", color = NightTextSecondary) },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = NightAccentBright) },
+                placeholder = { Text("Search city, station or lat,lon", color = NightTextSecondary) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = NightAccentBright) },
                 trailingIcon = {
                     if (isSearching) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = NightAccentBright, strokeWidth = 2.dp)
+                        Text("...", color = NightAccentBright, modifier = Modifier.padding(end = 16.dp), fontWeight = FontWeight.Bold)
                     }
                 },
                 singleLine = true,
@@ -407,45 +384,61 @@ fun WakeWayScreen(
                     onSearch = {
                         if (searchQuery.isNotBlank()) {
                             isSearching = true
-                            coroutineScope.launch(Dispatchers.IO) {
-                                try {
-                                    val url = java.net.URL("https://nominatim.openstreetmap.org/search?q=${java.net.URLEncoder.encode(searchQuery, "UTF-8")}&format=json&limit=1")
-                                    val connection = url.openConnection() as java.net.HttpURLConnection
-                                    connection.setRequestProperty("User-Agent", "WakeWay App")
-                                    connection.connect()
-                                    
-                                    if (connection.responseCode == 200) {
-                                        val response = connection.inputStream.bufferedReader().use { it.readText() }
-                                        val jsonArray = org.json.JSONArray(response)
-                                        if (jsonArray.length() > 0) {
-                                            val jsonObject = jsonArray.getJSONObject(0)
-                                            val lat = jsonObject.getDouble("lat")
-                                            val lon = jsonObject.getDouble("lon")
-                                            val displayName = jsonObject.getString("display_name").split(",").firstOrNull() ?: searchQuery
-                                            
-                                            withContext(Dispatchers.Main) {
-                                                isSearching = false
-                                                val pt = GeoPoint(lat, lon)
-                                                mapView?.controller?.animateTo(pt)
-                                                mapView?.controller?.setZoom(12.0)
-                                                Toast.makeText(context, "Found: $displayName", Toast.LENGTH_SHORT).show()
+                            isSuggestionsExpanded = false
+                            
+                            // Try parsing coordinates
+                            val coords = searchQuery.split(",").map { it.trim().toDoubleOrNull() }
+                            if (coords.size == 2 && coords[0] != null && coords[1] != null) {
+                                val lat = coords[0]!!
+                                val lon = coords[1]!!
+                                isSearching = false
+                                val pt = GeoPoint(lat, lon)
+                                mapView?.overlays?.filterIsInstance<MyLocationNewOverlay>()?.forEach { it.disableFollowLocation() }
+                                mapView?.controller?.animateTo(pt)
+                                mapView?.controller?.setZoom(15.0)
+                                Toast.makeText(context, "Location set to Coordinates", Toast.LENGTH_SHORT).show()
+                            } else {
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    try {
+                                        val url = java.net.URL("https://nominatim.openstreetmap.org/search?q=${java.net.URLEncoder.encode(searchQuery, "UTF-8")}&format=json&limit=1")
+                                        val connection = url.openConnection() as java.net.HttpURLConnection
+                                        connection.setRequestProperty("User-Agent", "WakeWay App")
+                                        connection.connect()
+                                        
+                                        if (connection.responseCode == 200) {
+                                            val response = connection.inputStream.bufferedReader().use { it.readText() }
+                                            val jsonArray = org.json.JSONArray(response)
+                                            if (jsonArray.length() > 0) {
+                                                val jsonObject = jsonArray.getJSONObject(0)
+                                                val lat = jsonObject.getDouble("lat")
+                                                val lon = jsonObject.getDouble("lon")
+                                                val displayName = jsonObject.getString("display_name").split(",").firstOrNull() ?: searchQuery
+                                                
+                                                withContext(Dispatchers.Main) {
+                                                    isSearching = false
+                                                    val pt = GeoPoint(lat, lon)
+                                                    mapView?.overlays?.filterIsInstance<MyLocationNewOverlay>()?.forEach { it.disableFollowLocation() }
+                                                    mapView?.controller?.animateTo(pt)
+                                                    mapView?.controller?.setZoom(12.0)
+                                                    Toast.makeText(context, "Found: $displayName", Toast.LENGTH_SHORT).show()
+                                                }
+                                            } else {
+                                                withContext(Dispatchers.Main) {
+                                                    isSearching = false
+                                                    Toast.makeText(context, "Location not found", Toast.LENGTH_SHORT).show()
+                                                }
                                             }
                                         } else {
                                             withContext(Dispatchers.Main) {
                                                 isSearching = false
-                                                Toast.makeText(context, "Location not found", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "Search limit reached or failed", Toast.LENGTH_SHORT).show()
                                             }
                                         }
-                                    } else {
+                                    } catch (e: Throwable) {
                                         withContext(Dispatchers.Main) {
                                             isSearching = false
-                                            Toast.makeText(context, "Search limit reached or failed", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Search Error: ${e.message}", Toast.LENGTH_SHORT).show()
                                         }
-                                    }
-                                } catch (e: Throwable) {
-                                    withContext(Dispatchers.Main) {
-                                        isSearching = false
-                                        Toast.makeText(context, "Search Error: ${e.message}", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             }
@@ -462,6 +455,39 @@ fun WakeWayScreen(
                     unfocusedTextColor = NightTextPrimary
                 )
             )
+
+            if (isSuggestionsExpanded) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = NightCard)
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+                        searchSuggestions.forEach { suggestion ->
+                            TextButton(
+                                onClick = {
+                                    searchQuery = suggestion.first
+                                    isSuggestionsExpanded = false
+                                    mapView?.overlays?.filterIsInstance<MyLocationNewOverlay>()?.forEach { it.disableFollowLocation() }
+                                    mapView?.controller?.animateTo(suggestion.second)
+                                    mapView?.controller?.setZoom(14.0)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+                            ) {
+                                Text(
+                                    text = suggestion.first,
+                                    color = NightTextPrimary,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = TextAlign.Start
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // ── Bottom Control Panel ──
@@ -610,6 +636,7 @@ fun WakeWayScreen(
                     onClick = {
                         mapView?.let { map ->
                             val loc = (map.overlays.firstOrNull { it is MyLocationNewOverlay } as? MyLocationNewOverlay)
+                            loc?.enableFollowLocation()
                             loc?.myLocation?.let { pos ->
                                 map.controller.animateTo(pos)
                                 map.controller.setZoom(15.0)
